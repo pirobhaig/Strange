@@ -10,6 +10,12 @@ if %errorlevel% neq 0 (
   exit /b 1
 )
 
+REM Keep temp and cache inside this folder's drive so C: does not run out of space if moved to D:/E:/F:
+if not exist "%~dp0.tmp-build" mkdir "%~dp0.tmp-build"
+set "TEMP=%~dp0.tmp-build"
+set "TMP=%~dp0.tmp-build"
+set "ELECTRON_BUILDER_CACHE=%~dp0.tmp-build\eb-cache"
+
 echo [1/3] Installing dependencies + Electron builder...
 call npm install --no-audit --no-fund
 if %errorlevel% neq 0 (
@@ -34,13 +40,17 @@ if %errorlevel% neq 0 (
 )
 
 echo [2/3] Building frontend, compiled backend, and Windows 10 .exe installer...
+if exist "%~dp0release" rmdir /s /q "%~dp0release"
 call npm run electron:build:win
 if %errorlevel% neq 0 (
-  echo Installer build failed. See errors above.
+  echo.
+  echo Installer build failed. If you see "not enough space on the disk",
+  echo move this entire folder to a drive with at least 2 GB free (like D: or E:) and run again.
   pause
   exit /b 1
 )
 
+if exist "%~dp0.tmp-build" rmdir /s /q "%~dp0.tmp-build"
 echo [3/3] Done! Your Windows installer is ready inside the "release" folder.
 explorer "%~dp0release"
 pause

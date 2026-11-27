@@ -1,13 +1,35 @@
 appId: com.strange.operator.desktop
 productName: STRANGE
 copyright: Copyright © 2026 STRANGE
+compression: normal
 directories:
   output: release
 files:
   - dist/**/*
+  - "!dist/assets/aistudio/**"
   - dist-server/**/*
   - electron/**/*
   - package.json
+  - "!node_modules/vite/**"
+  - "!node_modules/@vitejs/**"
+  - "!node_modules/@tailwindcss/**"
+  - "!node_modules/tailwindcss/**"
+  - "!node_modules/@rollup/**"
+  - "!node_modules/rollup/**"
+  - "!node_modules/esbuild/**"
+  - "!node_modules/@esbuild/**"
+  - "!node_modules/lightningcss*/**"
+  - "!node_modules/lucide-react/**"
+  - "!node_modules/recharts/**"
+  - "!node_modules/jspdf/**"
+  - "!node_modules/motion/**"
+  - "!node_modules/framer-motion/**"
+  - "!node_modules/react/**"
+  - "!node_modules/react-dom/**"
+  - "!node_modules/d3-*/**"
+  - "!node_modules/html2canvas/**"
+  - "!node_modules/canvg/**"
+  - "!node_modules/core-js/**"
 asar: true
 win:
   target:
