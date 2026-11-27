@@ -5,10 +5,8 @@ directories:
   output: release
 files:
   - dist/**/*
+  - dist-server/**/*
   - electron/**/*
-  - server.ts
-  - src/server/**/*
-  - src/types.ts
   - package.json
 asar: true
 win:

@@ -4,13 +4,14 @@
  * Security & Hardware Design:
  * - contextIsolation: true, nodeIntegration: false, sandbox: true
  * - Uses Electron safeStorage (Windows DPAPI) to encrypt credentials at rest
- * - Runs the local Node/Express + local JSON storage backend without requiring system Node.js or any database
- * - Restricts external desktop app launching to explicitly allowlisted protocols/targets
+ * - Runs the compiled Node/Express + local JSON backend via Electron's embedded Node runtime (ELECTRON_RUN_AS_NODE=1)
+ * - No external database or separate Node.js installation required for end users
  */
 
 const { app, BrowserWindow, ipcMain, safeStorage, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
 const { spawn } = require('child_process');
 
 // Lenovo G570 / 6 GB RAM optimization: keep GPU/background footprint low
@@ -61,21 +62,46 @@ function startEmbeddedBackend() {
   fs.mkdirSync(dataDir, { recursive: true });
   const decryptedSecrets = loadSecretsIntoEnv();
 
-  const serverEntry = path.join(__dirname, '..', 'server.ts');
+  const appRoot = path.join(__dirname, '..');
+  const serverEntry = path.join(appRoot, 'dist-server', 'server.mjs');
+  const distDir = path.join(appRoot, 'dist');
+
   const env = {
     ...process.env,
     ...decryptedSecrets,
+    ELECTRON_RUN_AS_NODE: '1',
     NODE_ENV: 'production',
     PORT: String(SERVER_PORT),
     STRANGE_DATA_DIR: dataDir,
+    STRANGE_DIST_DIR: distDir,
   };
 
-  // Spawn bundled Node runtime with tsx/server entry
   serverProcess = spawn(process.execPath, [serverEntry], {
-    cwd: path.join(__dirname, '..'),
+    cwd: app.getPath('userData'),
     env,
     stdio: 'ignore',
     windowsHide: true,
+  });
+}
+
+function waitForBackendReady(timeoutMs = 20000) {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      const req = http.get(`http://127.0.0.1:${SERVER_PORT}/api/status`, (res) => {
+        res.resume();
+        resolve(true);
+      });
+      req.on('error', () => {
+        if (Date.now() - start >= timeoutMs) {
+          resolve(false);
+        } else {
+          setTimeout(check, 250);
+        }
+      });
+      req.end();
+    };
+    check();
   });
 }
 
@@ -115,9 +141,10 @@ if (!gotLock) {
     }
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     startEmbeddedBackend();
-    setTimeout(createWindow, 1200);
+    await waitForBackendReady(20000);
+    createWindow();
   });
 }
 
