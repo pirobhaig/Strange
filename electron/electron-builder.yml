@@ -1,0 +1,25 @@
+appId: com.strange.operator.desktop
+productName: STRANGE
+copyright: Copyright © 2026 STRANGE
+directories:
+  output: release
+files:
+  - dist/**/*
+  - electron/**/*
+  - server.ts
+  - src/server/**/*
+  - src/types.ts
+  - package.json
+asar: true
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: STRANGE-Setup-${version}-win-x64.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: STRANGE

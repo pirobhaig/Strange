@@ -1,0 +1,6 @@
+{
+  "name": "STRANGE — Personal AI Operator & CRM",
+  "description": "Lightweight desktop-ready AI operator for business discovery, product engineering, 3-pass testing, outreach workflows, Whop/Supabase/Vercel integrations, and CRM monitoring.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
