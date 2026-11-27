@@ -81,10 +81,28 @@ export function OnboardingModal({ integrations, onComplete }: Props) {
               </span>
             </div>
             <p className="mt-2 text-xs leading-relaxed text-slate-400">
-              Credentials stay strictly on the server (managed via Settings &gt; Secrets in AI Studio, or encrypted via Windows DPAPI Electron safeStorage on Windows 10) and are never exposed to the browser or saved in chat memory.
+              Credentials stay strictly on the server (managed via Settings &gt; Secrets in AI Studio,{' '}
+              <span className="font-mono text-cyan-300">CONFIGURE-GEMINI-KEY.bat</span> on Windows localhost, or Windows DPAPI Electron safeStorage) and are never exposed to the browser or saved in chat memory.
             </p>
 
             <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => setSelectedModel('gemini-3.1-flash-lite')}
+                className={`rounded-lg border p-3 text-left transition-colors ${
+                  selectedModel === 'gemini-3.1-flash-lite'
+                    ? 'border-cyan-500/60 bg-cyan-500/10 text-slate-100'
+                    : 'border-slate-800 bg-[#0D1117] text-slate-300 hover:border-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium">gemini-3.1-flash-lite</span>
+                  <span className="text-[11px] font-medium text-emerald-400">Recommended</span>
+                </div>
+                <div className="mt-0.5 text-xs text-slate-400">
+                  Fast, reliable default for chat, automation tools, and low-RAM Windows laptops
+                </div>
+              </button>
               <button
                 type="button"
                 onClick={() => setSelectedModel('gemini-4-hydrogen')}
@@ -96,21 +114,7 @@ export function OnboardingModal({ integrations, onComplete }: Props) {
               >
                 <div className="text-sm font-medium">gemini-4-hydrogen</div>
                 <div className="mt-0.5 text-xs text-slate-400">
-                  Balanced reasoning, web search grounding, PRD & code generation
-                </div>
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedModel('gemini-3.1-flash-lite')}
-                className={`rounded-lg border p-3 text-left transition-colors ${
-                  selectedModel === 'gemini-3.1-flash-lite'
-                    ? 'border-cyan-500/60 bg-cyan-500/10 text-slate-100'
-                    : 'border-slate-800 bg-[#0D1117] text-slate-300 hover:border-slate-700'
-                }`}
-              >
-                <div className="text-sm font-medium">gemini-3.1-flash-lite</div>
-                <div className="mt-0.5 text-xs text-slate-400">
-                  Ultra-low latency mode for quick responses on modest hardware
+                  Higher-capacity mode with automatic fallback to flash-lite if temporarily busy
                 </div>
               </button>
             </div>

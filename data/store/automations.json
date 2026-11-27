@@ -1,0 +1,15 @@
+[
+  {
+    "id": "auto_950eb90aee6b",
+    "name": "Live Monitor",
+    "description": "System-wide health status check.",
+    "taskType": "health_check",
+    "intervalMinutes": 30,
+    "enabled": true,
+    "approvedByUser": true,
+    "lastRunAt": null,
+    "lastResult": null,
+    "lastStatus": "never_run",
+    "createdAt": "2026-11-27T15:23:10.970Z"
+  }
+]

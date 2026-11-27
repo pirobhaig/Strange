@@ -1,6 +1,7 @@
 import type { IntegrationStatus, WhopAnalytics } from '../types.ts';
 import { getSelectedModel, getSetting, logActivity, nowIso } from './db.ts';
 import { DB_PATH } from './db.ts';
+import { getGeminiSecretStatus } from './secrets.ts';
 
 const PRIVATE_IP_PATTERNS = [
   /^localhost$/i,
@@ -57,7 +58,7 @@ export async function runSafeProjectHealthCheck(
 }
 
 export function getIntegrationStatusSnapshot(): IntegrationStatus {
-  const geminiConfigured = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY');
+  const geminiSecret = getGeminiSecretStatus();
   const whopConfigured = Boolean(process.env.WHOP_API_KEY);
   const supabaseUrlConfigured = Boolean(process.env.SUPABASE_URL);
   const supabaseConfigured = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY);
@@ -65,11 +66,12 @@ export function getIntegrationStatusSnapshot(): IntegrationStatus {
 
   return {
     gemini: {
-      configured: geminiConfigured,
+      configured: geminiSecret.configured,
+      credentialSource: geminiSecret.source,
       model: getSelectedModel(),
       lastVerifiedAt: getSetting('gemini_last_verified_at') || null,
       lastStatus: (getSetting('gemini_last_status', 'untested') as IntegrationStatus['gemini']['lastStatus']),
-      lastError: getSetting('gemini_last_error') || null,
+      lastError: geminiSecret.warning || getSetting('gemini_last_error') || null,
     },
     whop: {
       configured: whopConfigured,

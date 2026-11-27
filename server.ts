@@ -31,6 +31,7 @@ import {
   getOpportunity,
   getProject,
   getStorageHealthInfo,
+  isValidGeminiModelId,
   listActivityLogs,
   listApprovals,
   listAutomations,
@@ -67,6 +68,7 @@ import {
   generateProductSourceBundle,
   generateSupabaseMigrationSql,
   researchOutreachTargets,
+  runFullAiDiagnostics,
   testGeminiConnection,
 } from './src/server/gemini.ts';
 import {
@@ -248,6 +250,12 @@ async function startServer() {
 
   app.post('/api/settings', (req, res) => {
     const body = req.body as Record<string, unknown>;
+    if (body && typeof body.gemini_model === 'string' && !isValidGeminiModelId(body.gemini_model)) {
+      res.status(400).json({
+        error: `Model "${body.gemini_model}" is deprecated or invalid. Use an active Gemini model such as gemini-3.1-flash-lite or gemini-4-hydrogen.`,
+      });
+      return;
+    }
     const allowedKeys = new Set([
       'gemini_model',
       'onboarding_completed',
@@ -261,7 +269,7 @@ async function startServer() {
     ]);
     for (const [k, v] of Object.entries(body || {})) {
       if (allowedKeys.has(k) && (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')) {
-        setSetting(k, String(v));
+        setSetting(k, String(v).trim());
       }
     }
     logActivity('settings', 'Updated STRANGE preferences', Object.keys(body || {}).join(', '), 'info');
@@ -269,19 +277,39 @@ async function startServer() {
   });
 
   app.post('/api/ai/test', async (req, res) => {
-    const model = req.body?.model as GeminiModelId | undefined;
-    if (model && model !== 'gemini-4-hydrogen' && model !== 'gemini-3.1-flash-lite') {
-      res.status(400).json({ ok: false, error: 'Unsupported Gemini model selection.' });
+    const rawModel = typeof req.body?.model === 'string' ? req.body.model.trim() : undefined;
+    const model = rawModel ? (rawModel as GeminiModelId) : undefined;
+    if (model && !isValidGeminiModelId(model)) {
+      res.status(400).json({
+        ok: false,
+        error: `Model "${model}" is deprecated or invalid. Use an active Gemini model such as gemini-3.1-flash-lite or gemini-4-hydrogen.`,
+      });
       return;
     }
     const result = await testGeminiConnection(model);
     logActivity(
       'ai',
       'Tested Gemini API connection',
-      result.ok ? `Connected (${result.model}, ${result.latencyMs}ms)` : result.error || 'Connection failed',
+      result.ok
+        ? `Connected (${result.modelUsed || result.model}, ${result.latencyMs}ms)`
+        : result.error || 'Connection failed',
       result.ok ? 'success' : 'error'
     );
     res.status(result.ok ? 200 : 502).json(result);
+  });
+
+  app.post('/api/ai/diagnostics', async (req, res) => {
+    const rawModel = typeof req.body?.model === 'string' ? req.body.model.trim() : undefined;
+    const report = await runFullAiDiagnostics(rawModel || undefined);
+    logActivity(
+      'ai',
+      'Ran 6-point AI connection diagnostic',
+      report.overallOk
+        ? `All 6 checks passed (${report.activeModelUsed || report.configuredModel}, ${report.latencyMs}ms)`
+        : `Diagnostic completed with failures (${report.checks.filter((c) => c.status === 'fail').length} failed)`,
+      report.overallOk ? 'success' : 'warning'
+    );
+    res.status(200).json(report);
   });
 
   // --- Conversations & Main AI Operator Workspace ---
@@ -364,6 +392,7 @@ async function startServer() {
       const metrics = getCrmMetrics();
       const projects = listProjects();
       const pendingApprovals = listApprovals().filter((a) => a.status === 'pending');
+      const automations = listAutomations();
       const contextSnapshot = JSON.stringify(
         {
           metrics,
@@ -374,6 +403,14 @@ async function startServer() {
             healthStatus: p.healthStatus,
             deploymentStatus: p.deploymentStatus,
             recentErrors: p.recentErrors,
+          })),
+          automations: automations.map((a) => ({
+            id: a.id,
+            name: a.name,
+            taskType: a.taskType,
+            intervalMinutes: a.intervalMinutes,
+            enabled: a.enabled,
+            lastStatus: a.lastStatus,
           })),
           pendingApprovals: pendingApprovals.map((a) => ({
             id: a.id,
@@ -392,14 +429,70 @@ async function startServer() {
         attachmentText,
         contextSnapshot,
         useWebSearch,
+        tools: {
+          createAutomation: async ({ name, taskType, intervalMinutes, description }) => {
+            const automation = createAutomation({
+              name,
+              description,
+              taskType,
+              intervalMinutes: Math.max(5, Number(intervalMinutes || 60)),
+              enabled: true,
+              approvedByUser: true,
+            });
+            logActivity(
+              'automation',
+              `Created scheduled task via chat: ${automation.name}`,
+              `Type: ${automation.taskType}, every ${automation.intervalMinutes} min`,
+              'success'
+            );
+            return { automation };
+          },
+          listAutomations: async () => ({ automations: listAutomations() }),
+          runAutomation: async (taskId: string) => {
+            const automation = await runAutomationTaskById(taskId);
+            return { automation };
+          },
+          queueApproval: async ({ category, title, target, proposedAction, consequences }) => {
+            const approval = createApproval({
+              category,
+              title,
+              target,
+              proposedAction,
+              consequences,
+              payload: { source: 'chat_operator' },
+            });
+            logActivity('approval', `Queued approval via chat: ${approval.title}`, `Target: ${approval.target}`, 'info');
+            return { approval };
+          },
+          createBackup: async (reason: string) => {
+            const backup = createAutomaticBackup(reason || 'chat_operator');
+            logActivity(
+              'storage',
+              'Created local JSON backup via chat',
+              `${backup.filename} (${backup.sizeKb} KB)`,
+              'success'
+            );
+            return { filename: backup.filename, sizeKb: backup.sizeKb };
+          },
+          runWeeklyMaintenance: async () => {
+            const res = await executeWeeklyMaintenanceAcrossAllProjects();
+            return { inspectedCount: res.inspectedCount };
+          },
+        },
       });
+
+      const waitingForApproval = aiResult.executedTools.some(
+        (t) => t.name === 'queue_approval' && t.status === 'success'
+      );
 
       const assistantMsg = addMessage({
         conversationId,
         role: 'assistant',
         content: aiResult.text,
         sources: aiResult.sources,
-        taskState: 'completed',
+        executedTools: aiResult.executedTools.length > 0 ? aiResult.executedTools : undefined,
+        modelUsed: aiResult.modelUsed,
+        taskState: waitingForApproval ? 'waiting_for_approval' : 'completed',
       });
 
       res.json({ userMessage: userMsg, assistantMessage: assistantMsg });

@@ -411,12 +411,27 @@ export function getAllSettings(): Record<string, string> {
   return { ...store.settings };
 }
 
+const DEPRECATED_MODELS = new Set([
+  'gemini-1.5-flash',
+  'gemini-1.5-pro',
+  'gemini-pro',
+  'gemini-2.0-flash',
+  'gemini-2.0-pro',
+  'gemini-2.0-flash-thinking',
+]);
+
+export function isValidGeminiModelId(model: string): boolean {
+  const trimmed = model.trim();
+  if (!trimmed || DEPRECATED_MODELS.has(trimmed)) return false;
+  return /^gemini-[a-z0-9.-]+$/i.test(trimmed);
+}
+
 export function getSelectedModel(): GeminiModelId {
-  const saved = getSetting('gemini_model', 'gemini-4-hydrogen');
-  if (saved === 'gemini-3.1-flash-lite' || saved === 'gemini-4-hydrogen') {
+  const saved = getSetting('gemini_model', 'gemini-3.1-flash-lite');
+  if (isValidGeminiModelId(saved)) {
     return saved;
   }
-  return 'gemini-4-hydrogen';
+  return 'gemini-3.1-flash-lite';
 }
 
 // --- Activity Logs ---

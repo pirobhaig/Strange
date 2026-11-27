@@ -10,7 +10,9 @@ import {
   Volume2,
   VolumeX,
   AlertCircle,
+  CheckCircle2,
   ExternalLink,
+  Wrench,
   X,
 } from 'lucide-react';
 import type {
@@ -61,7 +63,7 @@ export function AssistantView({
   const [activeConvId, setActiveConvId] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
-  const [useWebSearch, setUseWebSearch] = useState(true);
+  const [useWebSearch, setUseWebSearch] = useState(false);
   const [taskState, setTaskState] = useState<AgentTaskState>('idle');
   const [taskDetail, setTaskDetail] = useState('Ready for command');
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
@@ -296,6 +298,13 @@ export function AssistantView({
           <div className="text-xs font-medium text-slate-500">Operator Commands</div>
           <button
             type="button"
+            onClick={() => handleSend('Create a scheduled health check automation named "Hourly App Monitor" every 60 minutes.')}
+            className="w-full rounded-md border border-slate-800 bg-[#0D1117] px-2.5 py-2 text-left text-xs text-slate-300 hover:border-cyan-500/40 hover:text-cyan-200 transition-colors"
+          >
+            Create hourly health automation
+          </button>
+          <button
+            type="button"
             onClick={() => handleSend('STRANGE, update all my applications.')}
             className="w-full rounded-md border border-slate-800 bg-[#0D1117] px-2.5 py-2 text-left text-xs text-slate-300 hover:border-cyan-500/40 hover:text-cyan-200 transition-colors"
           >
@@ -421,6 +430,12 @@ export function AssistantView({
                       <span className="font-medium text-slate-300">{isUser ? 'You' : 'STRANGE'}</span>
                       <span aria-hidden="true">·</span>
                       <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      {!isUser && msg.modelUsed && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-mono text-slate-400">{msg.modelUsed}</span>
+                        </>
+                      )}
                       {msg.attachmentName && (
                         <>
                           <span aria-hidden="true">·</span>
@@ -435,6 +450,48 @@ export function AssistantView({
                           : 'border-slate-800/90 bg-[#0D1117] text-slate-200'
                       }`}
                     >
+                      {!isUser && msg.executedTools && msg.executedTools.length > 0 && (
+                        <div className="mb-3 space-y-1.5 border-b border-slate-800/80 pb-3">
+                          <div className="flex items-center justify-between gap-2 text-xs">
+                            <span className="inline-flex items-center gap-1.5 font-medium text-cyan-300">
+                              <Wrench className="h-3.5 w-3.5" />
+                              <span>Executed Operator Action{msg.executedTools.length > 1 ? 's' : ''}</span>
+                            </span>
+                            {msg.executedTools.some(
+                              (t) =>
+                                t.name === 'create_automation' ||
+                                t.name === 'run_automation' ||
+                                t.name === 'queue_approval'
+                            ) && (
+                              <button
+                                type="button"
+                                onClick={() => onNavigate('automation')}
+                                className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2"
+                              >
+                                Open Automation Centre
+                              </button>
+                            )}
+                          </div>
+                          {msg.executedTools.map((tool, idx) => (
+                            <div
+                              key={`${tool.name}_${idx}`}
+                              className={`flex items-start gap-2 rounded-lg border px-2.5 py-1.5 text-xs ${
+                                tool.status === 'success'
+                                  ? 'border-emerald-500/25 bg-emerald-500/5 text-emerald-200'
+                                  : 'border-red-500/25 bg-red-500/5 text-red-200'
+                              }`}
+                            >
+                              {tool.status === 'success' ? (
+                                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                              ) : (
+                                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" />
+                              )}
+                              <span>{tool.summary}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
                       {msg.content}
 
                       {!isUser && msg.sources && msg.sources.length > 0 && (

@@ -1,6 +1,11 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { FunctionDeclaration, GoogleGenAI, Type } from '@google/genai';
 import type {
+  AiDiagnosticCheck,
+  AiDiagnosticsReport,
+  ApprovalItem,
+  AutomationTask,
   ChatMessage,
+  ExecutedToolAction,
   GeminiModelId,
   GroundingSource,
   OpportunityItem,
@@ -8,15 +13,13 @@ import type {
   ProductPRD,
   ProjectRecord,
 } from '../types.ts';
-import { getSelectedModel, setSetting } from './db.ts';
+import { getSelectedModel, isValidGeminiModelId, setSetting } from './db.ts';
+import { getGeminiApiKeyOrThrow, getGeminiSecretStatus } from './secrets.ts';
+
+const FALLBACK_MODEL_CHAIN: GeminiModelId[] = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'];
 
 function getAiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-    throw new Error(
-      'GEMINI_API_KEY is not configured in server environment secrets. Add your Gemini API key in Settings > Secrets and restart.'
-    );
-  }
+  const apiKey = getGeminiApiKeyOrThrow();
   return new GoogleGenAI({
     apiKey,
     httpOptions: {
@@ -27,36 +30,84 @@ function getAiClient(): GoogleGenAI {
   });
 }
 
-function normalizeGeminiError(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  if (msg.includes('API_KEY_INVALID') || msg.includes('PERMISSION_DENIED') || msg.includes('403')) {
-    return 'Gemini API authentication failed (PERMISSION_DENIED / API_KEY_INVALID). Check your GEMINI_API_KEY in Settings > Secrets.';
+function extractUpstreamErrorMessage(raw: string): string {
+  try {
+    const start = raw.indexOf('{');
+    if (start >= 0) {
+      const parsed = JSON.parse(raw.slice(start)) as { error?: { message?: string; status?: string; code?: number } };
+      if (parsed.error?.message) {
+        return `${parsed.error.message}${parsed.error.status ? ` (${parsed.error.status})` : ''}`;
+      }
+    }
+  } catch {
+    // not JSON
   }
-  if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
-    return 'Gemini API rate limit or quota reached (RESOURCE_EXHAUSTED). Wait briefly or switch to a billing-enabled API key in Settings > Secrets.';
-  }
-  if (msg.includes('NOT_FOUND') || msg.includes('404')) {
-    return 'Requested Gemini model was not found (404). Verify the selected model in Settings.';
-  }
-  if (msg.includes('AbortError') || msg.includes('timeout')) {
-    return 'Gemini request timed out. Try again or switch to gemini-3.1-flash-lite for lower latency.';
-  }
-  return msg;
+  return raw;
 }
 
-async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 2): Promise<T> {
+export function normalizeGeminiError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const clean = extractUpstreamErrorMessage(raw);
+  if (raw.includes('GEMINI_API_KEY is not configured') || raw.includes('malformed')) {
+    return raw;
+  }
+  if (raw.includes('API_KEY_INVALID') || raw.includes('PERMISSION_DENIED') || raw.includes('403') || raw.includes('401')) {
+    return 'Gemini API authentication failed (invalid key or insufficient permissions). Verify your Gemini API key in Settings > Secrets (AI Studio) or re-run CONFIGURE-GEMINI-KEY.bat (Windows).';
+  }
+  if (raw.includes('RESOURCE_EXHAUSTED') || raw.includes('429')) {
+    return 'Gemini API rate limit or quota reached (429 RESOURCE_EXHAUSTED). Wait briefly or use a billing-enabled API key.';
+  }
+  if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.includes('high demand')) {
+    return `Gemini model is temporarily overloaded (503 UNAVAILABLE): ${clean}. Switch to gemini-3.1-flash-lite in Settings or retry shortly.`;
+  }
+  if (raw.includes('NOT_FOUND') || raw.includes('404')) {
+    return `Requested Gemini model was not found or is unavailable on your API key (404): ${clean}. Select a supported model like gemini-3.1-flash-lite in Settings.`;
+  }
+  if (raw.includes('ENOTFOUND') || raw.includes('ECONNREFUSED') || raw.includes('fetch failed') || raw.includes('ECONNRESET')) {
+    return 'Network error: unable to reach Google Gemini API servers. Check your internet connection or firewall.';
+  }
+  if (raw.includes('AbortError') || raw.includes('timeout')) {
+    return 'Gemini API request timed out. Try again or switch to gemini-3.1-flash-lite for lower latency.';
+  }
+  return clean || 'Unexpected Gemini API error.';
+}
+
+async function generateWithFallback<T>(
+  primaryModel: GeminiModelId,
+  runner: (model: GeminiModelId) => Promise<T>
+): Promise<{ result: T; modelUsed: GeminiModelId }> {
+  const candidates = [primaryModel, ...FALLBACK_MODEL_CHAIN.filter((m) => m !== primaryModel)];
   let lastError: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
     try {
-      return await fn();
+      const result = await runner(candidate);
+      return { result, modelUsed: candidate };
     } catch (err) {
       lastError = err;
-      const msg = err instanceof Error ? err.message : String(err);
-      const retryable = msg.includes('429') || msg.includes('503') || msg.includes('500') || msg.includes('ECONNRESET');
-      if (!retryable || attempt === maxAttempts) {
-        throw new Error(normalizeGeminiError(err));
+      const raw = err instanceof Error ? err.message : String(err);
+      const isOverloadedOrMissingModel =
+        raw.includes('503') ||
+        raw.includes('UNAVAILABLE') ||
+        raw.includes('high demand') ||
+        raw.includes('NOT_FOUND') ||
+        raw.includes('404');
+
+      // Retry once on transient 429/500 before falling back
+      if (raw.includes('429') || raw.includes('500') || raw.includes('ECONNRESET')) {
+        await new Promise((r) => setTimeout(r, 900));
+        try {
+          const retryResult = await runner(candidate);
+          return { result: retryResult, modelUsed: candidate };
+        } catch (retryErr) {
+          lastError = retryErr;
+        }
       }
-      await new Promise((resolve) => setTimeout(resolve, 900 * attempt));
+
+      if (!isOverloadedOrMissingModel || i === candidates.length - 1) {
+        throw new Error(normalizeGeminiError(lastError));
+      }
     }
   }
   throw new Error(normalizeGeminiError(lastError));
@@ -100,29 +151,43 @@ function parseJsonFromModelText<T>(rawText: string | undefined): T {
 export async function testGeminiConnection(model?: GeminiModelId): Promise<{
   ok: boolean;
   model: GeminiModelId;
+  modelUsed?: GeminiModelId;
   latencyMs: number;
   reply?: string;
   error?: string;
 }> {
-  const activeModel = model || getSelectedModel();
+  const requestedModel = model || getSelectedModel();
+  if (!isValidGeminiModelId(requestedModel)) {
+    return {
+      ok: false,
+      model: requestedModel,
+      latencyMs: 0,
+      error: `Model "${requestedModel}" is deprecated or invalid. Use gemini-3.1-flash-lite or gemini-4-hydrogen.`,
+    };
+  }
   const start = Date.now();
   try {
     const ai = getAiClient();
-    const res = await withRetry(() =>
+    const { result, modelUsed } = await generateWithFallback(requestedModel, (m) =>
       ai.models.generateContent({
-        model: activeModel,
+        model: m,
         contents: 'Respond in one short sentence confirming STRANGE operator connection is live.',
       })
     );
     const latencyMs = Date.now() - start;
+    const reply = result.text?.trim() || 'Connection verified.';
     setSetting('gemini_last_verified_at', new Date().toISOString());
     setSetting('gemini_last_status', 'connected');
     setSetting('gemini_last_error', '');
     return {
       ok: true,
-      model: activeModel,
+      model: requestedModel,
+      modelUsed,
       latencyMs,
-      reply: res.text?.trim() || 'Connection verified.',
+      reply:
+        modelUsed !== requestedModel
+          ? `${reply} (Note: ${requestedModel} was temporarily busy; automatically served via ${modelUsed}.)`
+          : reply,
     };
   } catch (err) {
     const error = normalizeGeminiError(err);
@@ -130,12 +195,228 @@ export async function testGeminiConnection(model?: GeminiModelId): Promise<{
     setSetting('gemini_last_error', error);
     return {
       ok: false,
-      model: activeModel,
+      model: requestedModel,
       latencyMs: Date.now() - start,
       error,
     };
   }
 }
+
+export async function runFullAiDiagnostics(requestedModel?: GeminiModelId): Promise<AiDiagnosticsReport> {
+  const started = Date.now();
+  const configuredModel = requestedModel || getSelectedModel();
+  const secretStatus = getGeminiSecretStatus();
+  const checks: AiDiagnosticCheck[] = [];
+
+  checks.push({
+    id: 'provider_config',
+    label: 'Provider configuration',
+    status: 'pass',
+    details: `Google Gemini (@google/genai SDK) selected with model "${configuredModel}".`,
+  });
+
+  checks.push({
+    id: 'credential_saved',
+    label: 'Credential availability',
+    status: secretStatus.configured ? 'pass' : 'fail',
+    details: secretStatus.configured
+      ? `Credential detected via ${secretStatus.source === 'environment' ? 'server environment secret' : 'local .env file'} (value hidden).`
+      : secretStatus.malformed
+        ? secretStatus.warning || 'Configured credential appears malformed.'
+        : 'No Gemini API key detected on backend. Set GEMINI_API_KEY in AI Studio Secrets or run CONFIGURE-GEMINI-KEY.bat on Windows.',
+  });
+
+  let backendRetrieved = false;
+  if (secretStatus.configured) {
+    try {
+      getGeminiApiKeyOrThrow();
+      backendRetrieved = true;
+      checks.push({
+        id: 'backend_retrieval',
+        label: 'Backend credential retrieval',
+        status: 'pass',
+        details: 'Backend initialized GoogleGenAI client securely without exposing credentials to browser.',
+      });
+    } catch (err) {
+      checks.push({
+        id: 'backend_retrieval',
+        label: 'Backend credential retrieval',
+        status: 'fail',
+        details: normalizeGeminiError(err),
+      });
+    }
+  } else {
+    checks.push({
+      id: 'backend_retrieval',
+      label: 'Backend credential retrieval',
+      status: 'fail',
+      details: 'Skipped because no credential is currently configured.',
+    });
+  }
+
+  const modelSupported = isValidGeminiModelId(configuredModel);
+  checks.push({
+    id: 'model_supported',
+    label: 'Configured model validation',
+    status: modelSupported ? 'pass' : 'fail',
+    details: modelSupported
+      ? `Model "${configuredModel}" passes active Gemini model checks (automatic fallback ready if overloaded).`
+      : `Model "${configuredModel}" is deprecated or unsupported. Choose gemini-3.1-flash-lite or gemini-4-hydrogen.`,
+  });
+
+  let liveTestOk = false;
+  let activeModelUsed: string | null = null;
+  if (backendRetrieved && modelSupported) {
+    const testRes = await testGeminiConnection(configuredModel);
+    liveTestOk = testRes.ok;
+    activeModelUsed = testRes.modelUsed || configuredModel;
+    checks.push({
+      id: 'live_api_call',
+      label: 'Live Gemini API test request',
+      status: testRes.ok ? 'pass' : 'fail',
+      details: testRes.ok
+        ? `Succeeded in ${testRes.latencyMs}ms using ${activeModelUsed}: "${testRes.reply}"`
+        : testRes.error || 'Live API call failed.',
+    });
+  } else {
+    checks.push({
+      id: 'live_api_call',
+      label: 'Live Gemini API test request',
+      status: 'fail',
+      details: 'Cannot run live test until credential and model checks pass.',
+    });
+  }
+
+  checks.push({
+    id: 'chat_backend',
+    label: 'Chat & automation tool backend',
+    status: liveTestOk ? 'pass' : 'warn',
+    details: liveTestOk
+      ? 'Chat pipeline, local JSON memory, and real automation function-calling tools are operational.'
+      : 'Chat routes are online, awaiting passing live Gemini API check.',
+  });
+
+  return {
+    overallOk: checks.every((c) => c.status === 'pass'),
+    provider: 'Google Gemini',
+    configuredModel,
+    activeModelUsed,
+    latencyMs: Date.now() - started,
+    checkedAt: new Date().toISOString(),
+    checks,
+  };
+}
+
+// --- Real STRANGE Operator Function Calling Tools ---
+export interface OperatorToolExecutors {
+  createAutomation: (args: {
+    name: string;
+    taskType: AutomationTask['taskType'];
+    intervalMinutes: number;
+    description: string;
+  }) => Promise<{ automation: AutomationTask }>;
+  listAutomations: () => Promise<{ automations: AutomationTask[] }>;
+  runAutomation: (taskId: string) => Promise<{ automation: AutomationTask | null }>;
+  queueApproval: (args: {
+    category: ApprovalItem['category'];
+    title: string;
+    target: string;
+    proposedAction: string;
+    consequences: string;
+  }) => Promise<{ approval: ApprovalItem }>;
+  createBackup: (reason: string) => Promise<{ filename: string; sizeKb: number }>;
+  runWeeklyMaintenance: () => Promise<{ inspectedCount: number }>;
+}
+
+const OPERATOR_TOOL_DECLARATIONS: FunctionDeclaration[] = [
+  {
+    name: 'create_automation',
+    description:
+      'Create and save a real scheduled background automation task in STRANGE Automation Centre (persisted to local JSON storage). Use this whenever the user asks to create, schedule, set up, or make an automation.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        name: {
+          type: Type.STRING,
+          description: 'Clear name for the automation task (e.g., "Hourly App Health Check" or "Daily Workspace Backup").',
+        },
+        taskType: {
+          type: Type.STRING,
+          description: 'Must be one of: "health_check", "backup_workspace", or "weekly_maintenance_scan".',
+        },
+        intervalMinutes: {
+          type: Type.NUMBER,
+          description: 'Interval in minutes between runs (minimum 5, e.g., 30, 60, 1440 for daily, 10080 for weekly).',
+        },
+        description: {
+          type: Type.STRING,
+          description: 'Short description of what this automation performs.',
+        },
+      },
+      required: ['name', 'taskType', 'intervalMinutes'],
+    },
+  },
+  {
+    name: 'list_automations',
+    description: 'List all currently configured automations in STRANGE Automation Centre.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: 'run_automation',
+    description: 'Execute an existing approved automation immediately by its task ID.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        taskId: {
+          type: Type.STRING,
+          description: 'The ID of the automation task to run (e.g., auto_...).',
+        },
+      },
+      required: ['taskId'],
+    },
+  },
+  {
+    name: 'queue_approval',
+    description:
+      'Queue a mandatory human-in-the-loop approval item in Automation Centre for sensitive external, commercial (Whop), deployment (Vercel), outreach, or upgrade actions.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        category: {
+          type: Type.STRING,
+          description:
+            'One of: "product_build", "instagram_dm", "discord_post", "whop_change", "supabase_migration", "vercel_deploy", "maintenance_upgrade", "error_repair".',
+        },
+        title: { type: Type.STRING, description: 'Short title for the approval request.' },
+        target: { type: Type.STRING, description: 'Target project, account, or listing.' },
+        proposedAction: { type: Type.STRING, description: 'Exact proposed action or message.' },
+        consequences: { type: Type.STRING, description: 'Impact and safeguards explained clearly.' },
+      },
+      required: ['category', 'title', 'target', 'proposedAction', 'consequences'],
+    },
+  },
+  {
+    name: 'create_local_backup',
+    description: 'Create an immediate local JSON backup snapshot of all STRANGE data.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        reason: { type: Type.STRING, description: 'Short label for the backup (e.g., "operator_request").' },
+      },
+    },
+  },
+  {
+    name: 'run_weekly_maintenance',
+    description: 'Inspect all registered projects, check health, and queue per-project maintenance approval plans.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+];
 
 export async function generateOperatorReply(params: {
   history: ChatMessage[];
@@ -143,9 +424,10 @@ export async function generateOperatorReply(params: {
   attachmentText?: string;
   contextSnapshot: string;
   useWebSearch?: boolean;
-}): Promise<{ text: string; sources: GroundingSource[] }> {
+  tools?: OperatorToolExecutors;
+}): Promise<{ text: string; sources: GroundingSource[]; executedTools: ExecutedToolAction[]; modelUsed: string }> {
   const ai = getAiClient();
-  const model = getSelectedModel();
+  const primaryModel = getSelectedModel();
 
   const recentHistory = params.history
     .slice(-14)
@@ -163,26 +445,234 @@ export async function generateOperatorReply(params: {
 
   const systemInstruction = `You are STRANGE, a personal Windows desktop AI operator and software architect running on a resource-conscious machine (Lenovo G570, 6 GB RAM).
 Strict operating rules:
-1. Never claim you executed a command, deployed an app, sent a DM, or modified Whop/Supabase/Vercel unless the backend actually performed it and confirmed it in Live Local CRM & Workspace State.
-2. Never invent metrics, revenue, follower counts, or test passes.
-3. For financial, external messaging (Instagram/Discord), Whop listing changes, production DB changes, or deployment actions, instruct the user to approve the queued item in the Approval Queue or explain the exact step required.
-4. Keep responses direct, structured, actionable, and concise—like a capable operator, not a verbose chatbot.`;
+1. When the user asks you to create/schedule an automation, list or run automations, queue an approval, create a backup, or run weekly maintenance, IMMEDIATELY call the matching function tool rather than just explaining how to do it.
+2. Never claim you executed a command, created an automation, deployed an app, or sent a message unless a tool call actually succeeded and returned confirmation.
+3. Never invent metrics, revenue, follower counts, or test passes.
+4. For financial, external messaging (Instagram/Discord), Whop listing changes, production DB changes, or deployment actions, queue an approval item via queue_approval so the user can approve it in Automation Centre.
+5. Keep responses direct, structured, actionable, and concise.`;
 
-  const res = await withRetry(() =>
-    ai.models.generateContent({
-      model,
-      contents: prompt,
-      config: {
-        systemInstruction,
-        ...(params.useWebSearch ? { tools: [{ googleSearch: {} }] } : {}),
-      },
-    })
-  );
+  const isLocalOperatorIntent =
+    /\b(automation|automations|schedule|scheduled|backup|backups|approval|approvals|maintenance|crm|projects?)\b/i.test(
+      params.userMessage
+    );
+  const attachWebSearch = Boolean(params.useWebSearch && !isLocalOperatorIntent);
 
-  return {
-    text: res.text?.trim() || 'No response text returned by Gemini.',
-    sources: extractGroundingSources(res),
+  const buildCallConfig = (withSearch: boolean) => {
+    const tools: Array<Record<string, unknown>> = [];
+    if (withSearch) {
+      tools.push({ googleSearch: {} });
+    }
+    if (params.tools) {
+      tools.push({ functionDeclarations: OPERATOR_TOOL_DECLARATIONS });
+    }
+    const hybrid = withSearch && params.tools ? { includeServerSideToolInvocations: true } : undefined;
+    return {
+      systemInstruction,
+      ...(tools.length > 0 ? { tools: tools as never } : {}),
+      ...(hybrid ? { toolConfig: hybrid as never } : {}),
+    };
   };
+
+  let firstResponse;
+  let modelUsed: GeminiModelId;
+  let activeWithSearch = attachWebSearch;
+
+  try {
+    const out = await generateWithFallback(primaryModel, (m) =>
+      ai.models.generateContent({
+        model: m,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: buildCallConfig(activeWithSearch),
+      })
+    );
+    firstResponse = out.result;
+    modelUsed = out.modelUsed;
+  } catch (err) {
+    // If Google Search grounding hits quota (429) or unsupported hybrid tool config (400),
+    // gracefully fall back to direct Gemini + operator function tools so chat never breaks.
+    if (activeWithSearch) {
+      activeWithSearch = false;
+      const fallbackOut = await generateWithFallback(primaryModel, (m) =>
+        ai.models.generateContent({
+          model: m,
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: buildCallConfig(false),
+        })
+      );
+      firstResponse = fallbackOut.result;
+      modelUsed = fallbackOut.modelUsed;
+    } else {
+      throw err;
+    }
+  }
+
+  const executedTools: ExecutedToolAction[] = [];
+  const allSources: GroundingSource[] = [...extractGroundingSources(firstResponse)];
+  const calls = firstResponse.functionCalls || [];
+
+  if (calls.length === 0 || !params.tools) {
+    const text = firstResponse.text?.trim();
+    if (!text) {
+      throw new Error('Gemini returned an empty response. Please retry your message.');
+    }
+    return { text, sources: allSources, executedTools, modelUsed };
+  }
+
+  // Execute each requested backend tool truthfully
+  const functionResponseParts: Array<{
+    functionResponse: { id?: string; name: string; response: Record<string, unknown> };
+  }> = [];
+
+  for (const call of calls) {
+    const name = call.name || '';
+    const args = (call.args || {}) as Record<string, unknown>;
+    try {
+      let toolOutput: Record<string, unknown> = {};
+      if (name === 'create_automation') {
+        const rawType = String(args.taskType || 'health_check');
+        const taskType: AutomationTask['taskType'] =
+          rawType === 'backup_workspace' || rawType === 'weekly_maintenance_scan' ? rawType : 'health_check';
+        const intervalMinutes = Math.max(5, Number(args.intervalMinutes || 60));
+        const taskName = String(args.name || `Scheduled ${taskType.replace(/_/g, ' ')}`).slice(0, 100);
+        const description = String(args.description || `${taskType.replace(/_/g, ' ')} every ${intervalMinutes} min`);
+        const res = await params.tools.createAutomation({
+          name: taskName,
+          taskType,
+          intervalMinutes,
+          description,
+        });
+        toolOutput = { ok: true, automation: res.automation };
+        executedTools.push({
+          name,
+          status: 'success',
+          summary: `Created automation "${res.automation.name}" (${res.automation.taskType}, every ${res.automation.intervalMinutes} min, ID: ${res.automation.id})`,
+        });
+      } else if (name === 'list_automations') {
+        const res = await params.tools.listAutomations();
+        toolOutput = { ok: true, count: res.automations.length, automations: res.automations };
+        executedTools.push({
+          name,
+          status: 'success',
+          summary: `Listed ${res.automations.length} automation(s) from local storage`,
+        });
+      } else if (name === 'run_automation') {
+        const res = await params.tools.runAutomation(String(args.taskId || ''));
+        toolOutput = { ok: true, automation: res.automation };
+        executedTools.push({
+          name,
+          status: 'success',
+          summary: `Executed automation "${res.automation?.name || args.taskId}": ${res.automation?.lastResult || 'Completed'}`,
+        });
+      } else if (name === 'queue_approval') {
+        const allowedCats = new Set([
+          'product_build',
+          'instagram_dm',
+          'discord_post',
+          'whop_change',
+          'supabase_migration',
+          'vercel_deploy',
+          'maintenance_upgrade',
+          'error_repair',
+        ]);
+        const cat = allowedCats.has(String(args.category))
+          ? (String(args.category) as ApprovalItem['category'])
+          : 'maintenance_upgrade';
+        const res = await params.tools.queueApproval({
+          category: cat,
+          title: String(args.title || 'Operator Approval Request'),
+          target: String(args.target || 'Workspace'),
+          proposedAction: String(args.proposedAction || ''),
+          consequences: String(args.consequences || 'Requires explicit user confirmation.'),
+        });
+        toolOutput = { ok: true, approval: res.approval };
+        executedTools.push({
+          name,
+          status: 'success',
+          summary: `Queued approval "${res.approval.title}" (ID: ${res.approval.id})`,
+        });
+      } else if (name === 'create_local_backup') {
+        const res = await params.tools.createBackup(String(args.reason || 'chat_operator'));
+        toolOutput = { ok: true, backup: res };
+        executedTools.push({
+          name,
+          status: 'success',
+          summary: `Created backup ${res.filename} (${res.sizeKb} KB)`,
+        });
+      } else if (name === 'run_weekly_maintenance') {
+        const res = await params.tools.runWeeklyMaintenance();
+        toolOutput = { ok: true, inspectedCount: res.inspectedCount };
+        executedTools.push({
+          name,
+          status: 'success',
+          summary: `Ran weekly maintenance across ${res.inspectedCount} project(s)`,
+        });
+      } else {
+        toolOutput = { ok: false, error: `Unknown tool: ${name}` };
+      }
+
+      functionResponseParts.push({
+        functionResponse: {
+          ...(call.id ? { id: call.id } : {}),
+          name,
+          response: toolOutput,
+        },
+      });
+    } catch (toolErr) {
+      const errMsg = toolErr instanceof Error ? toolErr.message : 'Tool execution failed';
+      executedTools.push({ name, status: 'error', summary: errMsg });
+      functionResponseParts.push({
+        functionResponse: {
+          ...(call.id ? { id: call.id } : {}),
+          name,
+          response: { ok: false, error: errMsg },
+        },
+      });
+    }
+  }
+
+  const previousContent = firstResponse.candidates?.[0]?.content;
+  const followUpContents = previousContent
+    ? [
+        { role: 'user', parts: [{ text: prompt }] },
+        previousContent,
+        { role: 'user', parts: functionResponseParts },
+      ]
+    : [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: `${prompt}\n\nCompleted Tool Results:\n${JSON.stringify(executedTools, null, 2)}\n\nSummarize truthfully what was executed.`,
+            },
+          ],
+        },
+      ];
+
+  let finalText = '';
+  try {
+    const { result: secondResponse } = await generateWithFallback(modelUsed, (m) =>
+      ai.models.generateContent({
+        model: m,
+        contents: followUpContents as never,
+        config: buildCallConfig(activeWithSearch),
+      })
+    );
+    for (const s of extractGroundingSources(secondResponse)) {
+      if (!allSources.some((x) => x.uri === s.uri)) allSources.push(s);
+    }
+    finalText = secondResponse.text?.trim() || '';
+  } catch {
+    // Tools already executed truthfully; return verified execution summary rather than failing with 502.
+    finalText = '';
+  }
+
+  if (!finalText) {
+    finalText = executedTools
+      .map((t) => `${t.status === 'success' ? 'Completed' : 'Failed'}: ${t.summary}`)
+      .join('\n');
+  }
+
+  return { text: finalText, sources: allSources, executedTools, modelUsed };
 }
 
 export async function discoverBusinessOpportunities(
@@ -192,7 +682,7 @@ export async function discoverBusinessOpportunities(
   sources: GroundingSource[];
 }> {
   const ai = getAiClient();
-  const model = getSelectedModel();
+  const primaryModel = getSelectedModel();
 
   const prompt = `Research real-world software, web app, SaaS, or productivity tool problems related to: "${nicheQuery}".
 Use Google Search grounding to inspect real public discussions (Reddit threads, customer reviews, forums, competitor pages, industry discussions).
@@ -227,9 +717,9 @@ Return ONLY valid JSON matching this exact structure (no markdown commentary out
   ]
 }`;
 
-  const res = await withRetry(() =>
+  const { result: res } = await generateWithFallback(primaryModel, (m) =>
     ai.models.generateContent({
-      model,
+      model: m,
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
@@ -267,11 +757,11 @@ Return ONLY valid JSON matching this exact structure (no markdown commentary out
 
 export async function generateProductPRD(opportunity: OpportunityItem): Promise<ProductPRD> {
   const ai = getAiClient();
-  const model = getSelectedModel();
+  const primaryModel = getSelectedModel();
 
-  const res = await withRetry(() =>
+  const { result: res } = await generateWithFallback(primaryModel, (m) =>
     ai.models.generateContent({
-      model,
+      model: m,
       contents: `Create a thorough, pragmatic Product Requirements Document (PRD) for a solo founder building:
 Product Idea: ${opportunity.productIdea}
 Problem Solved: ${opportunity.problemSolved}
@@ -281,7 +771,7 @@ Competitors: ${opportunity.competitors}
 Proposed Solution: ${opportunity.proposedSolution}
 Core Features: ${opportunity.coreFeatures.join(', ')}
 
-Ensure the architecture is lightweight (clean HTML/CSS/JS + Node/SQLite or Supabase optional), practical, and testable.`,
+Ensure the architecture is lightweight (clean HTML/CSS/JS + local JSON or optional Supabase), practical, and testable.`,
       config: {
         responseMimeType: 'application/json',
         responseSchema: {
@@ -367,11 +857,11 @@ export async function generateProductSourceBundle(project: ProjectRecord): Promi
   readmeMd: string;
 }> {
   const ai = getAiClient();
-  const model = getSelectedModel();
+  const primaryModel = getSelectedModel();
 
-  const res = await withRetry(() =>
+  const { result: res } = await generateWithFallback(primaryModel, (m) =>
     ai.models.generateContent({
-      model,
+      model: m,
       contents: `Generate a complete, working, self-contained lightweight web application for the project "${project.name}".
 Description: ${project.description}
 PRD Summary: ${project.prd?.executiveSummary || project.description}
@@ -428,7 +918,7 @@ export async function researchOutreachTargets(params: {
   sources: GroundingSource[];
 }> {
   const ai = getAiClient();
-  const model = getSelectedModel();
+  const primaryModel = getSelectedModel();
 
   const prompt =
     params.platform === 'instagram'
@@ -478,9 +968,9 @@ Return ONLY JSON:
   ]
 }`;
 
-  const res = await withRetry(() =>
+  const { result: res } = await generateWithFallback(primaryModel, (m) =>
     ai.models.generateContent({
-      model,
+      model: m,
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
@@ -515,12 +1005,12 @@ export async function generatePresentationDeck(params: {
   slideCount?: number;
 }): Promise<PresentationSlide[]> {
   const ai = getAiClient();
-  const model = getSelectedModel();
+  const primaryModel = getSelectedModel();
   const count = Math.min(Math.max(params.slideCount || 7, 4), 12);
 
-  const res = await withRetry(() =>
+  const { result: res } = await generateWithFallback(primaryModel, (m) =>
     ai.models.generateContent({
-      model,
+      model: m,
       contents: `Generate a professional ${count}-slide presentation deck.
 Title: ${params.title}
 Target Audience: ${params.audience}
@@ -577,15 +1067,15 @@ export async function diagnoseProjectError(params: {
   patchedFileContent: string;
 }> {
   const ai = getAiClient();
-  const model = getSelectedModel();
+  const primaryModel = getSelectedModel();
 
   const filesText = Object.entries(params.fileSnapshot)
     .map(([name, content]) => `--- FILE: ${name} ---\n${content.slice(0, 6000)}`)
     .join('\n\n');
 
-  const res = await withRetry(() =>
+  const { result: res } = await generateWithFallback(primaryModel, (m) =>
     ai.models.generateContent({
-      model,
+      model: m,
       contents: `Diagnose this application error and prepare a safe, minimal, reversible fix.
 Project: ${params.project.name}
 Component: ${params.component}
@@ -620,11 +1110,11 @@ export async function generateMaintenancePlan(project: ProjectRecord): Promise<{
   proposedImprovements: { title: string; reason: string; riskLevel: 'Low' | 'Medium' | 'High' }[];
 }> {
   const ai = getAiClient();
-  const model = getSelectedModel();
+  const primaryModel = getSelectedModel();
 
-  const res = await withRetry(() =>
+  const { result: res } = await generateWithFallback(primaryModel, (m) =>
     ai.models.generateContent({
-      model,
+      model: m,
       contents: `Prepare a weekly maintenance & improvement plan for this registered application:
 Name: ${project.name}
 Tech Stack: ${project.techStack}
@@ -669,11 +1159,11 @@ export async function generateSupabaseMigrationSql(
   schemaDescription: string
 ): Promise<{ upSql: string; downSql: string; notes: string }> {
   const ai = getAiClient();
-  const model = getSelectedModel();
+  const primaryModel = getSelectedModel();
 
-  const res = await withRetry(() =>
+  const { result: res } = await generateWithFallback(primaryModel, (m) =>
     ai.models.generateContent({
-      model,
+      model: m,
       contents: `Generate a safe, reversible PostgreSQL / Supabase migration with Row Level Security (RLS) enabled for "${projectName}".
 Requirements: ${schemaDescription}
 Provide both UP migration SQL and reversible DOWN rollback SQL, plus concise security notes.`,

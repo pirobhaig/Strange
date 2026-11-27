@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  Activity,
   AlertTriangle,
   Archive,
   CheckCircle2,
@@ -11,8 +12,9 @@ import {
   Shield,
   Upload,
   Volume2,
+  XCircle,
 } from 'lucide-react';
-import type { GeminiModelId, IntegrationStatus, StorageHealthInfo } from '../types';
+import type { AiDiagnosticsReport, GeminiModelId, IntegrationStatus, StorageHealthInfo } from '../types';
 import { api } from '../lib/api';
 import { listAvailableVoices, speakText, stopSpeaking, type VoiceSettings } from '../lib/voice';
 
@@ -30,9 +32,13 @@ export function SettingsView({
   onDataChanged,
 }: Props) {
   const [model, setModel] = useState<GeminiModelId>(integrations.gemini.model);
+  const [customModelInput, setCustomModelInput] = useState<string>(integrations.gemini.model);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [testingGemini, setTestingGemini] = useState(false);
+  const [runningDiagnostics, setRunningDiagnostics] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<AiDiagnosticsReport | null>(null);
   const [geminiResult, setGeminiResult] = useState<string | null>(null);
+  const [modelError, setModelError] = useState<string | null>(null);
   const [supabaseResult, setSupabaseResult] = useState<string | null>(null);
   const [vercelResult, setVercelResult] = useState<string | null>(null);
   const [whopResult, setWhopResult] = useState<string | null>(null);
@@ -66,10 +72,18 @@ export function SettingsView({
   }, []);
 
   const handleSaveModel = async (nextModel: GeminiModelId) => {
-    setModel(nextModel);
-    await api.saveSettings({ gemini_model: nextModel });
-    setSavedToast(`Default Gemini model updated to ${nextModel}.`);
-    onDataChanged();
+    const trimmed = nextModel.trim();
+    if (!trimmed) return;
+    setModelError(null);
+    try {
+      await api.saveSettings({ gemini_model: trimmed });
+      setModel(trimmed);
+      setCustomModelInput(trimmed);
+      setSavedToast(`Default Gemini model updated to ${trimmed}.`);
+      onDataChanged();
+    } catch (err) {
+      setModelError(err instanceof Error ? err.message : 'Failed to update Gemini model.');
+    }
   };
 
   const handleTestGemini = async () => {
@@ -77,12 +91,27 @@ export function SettingsView({
     setGeminiResult(null);
     try {
       const res = await api.testGemini(model);
-      setGeminiResult(`Verified (${res.model}, ${res.latencyMs}ms): ${res.reply}`);
+      const servedBy = res.modelUsed && res.modelUsed !== res.model ? `${res.model} -> ${res.modelUsed}` : res.model;
+      setGeminiResult(`Verified (${servedBy}, ${res.latencyMs}ms): ${res.reply}`);
       onDataChanged();
     } catch (err) {
       setGeminiResult(err instanceof Error ? err.message : 'Gemini test failed');
     } finally {
       setTestingGemini(false);
+    }
+  };
+
+  const handleRunDiagnostics = async () => {
+    setRunningDiagnostics(true);
+    setDiagnostics(null);
+    try {
+      const report = await api.runAiDiagnostics(model);
+      setDiagnostics(report);
+      onDataChanged();
+    } catch (err) {
+      setGeminiResult(err instanceof Error ? err.message : 'Diagnostic check failed');
+    } finally {
+      setRunningDiagnostics(false);
     }
   };
 
@@ -342,24 +371,46 @@ export function SettingsView({
         )}
       </section>
 
-      {/* AI Provider Configuration */}
+      {/* AI Provider Configuration & 6-Point Diagnostics */}
       <section className="rounded-xl border border-slate-800/80 bg-[#0D1117] p-5 space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
           <div className="flex items-center gap-2">
             <Cpu className="h-4 w-4 text-cyan-400" />
-            <h2 className="text-base font-semibold text-slate-100">AI Intelligence Providers</h2>
+            <h2 className="text-base font-semibold text-slate-100">AI Intelligence Providers & Connection Diagnostic</h2>
           </div>
-          <span className={`text-xs font-medium ${integrations.gemini.configured ? 'text-emerald-400' : 'text-amber-400'}`}>
-            {integrations.gemini.configured ? 'Gemini Secret Active (Server-Side)' : 'Gemini Secret Unset'}
-          </span>
+          <div className="flex items-center gap-2 text-xs font-medium">
+            <span className={integrations.gemini.configured ? 'text-emerald-400' : 'text-amber-400'}>
+              {integrations.gemini.configured
+                ? integrations.gemini.credentialSource === 'local_env_file'
+                  ? 'Gemini Key Active (Local .env)'
+                  : 'Gemini Key Active (Server Secret)'
+                : 'Gemini Key Unset'}
+            </span>
+          </div>
         </div>
 
-        <p className="text-xs text-slate-400 leading-relaxed">
-          API keys are never rendered or collected in browser forms and are never written to local JSON storage. In AI Studio, configure secrets in <strong>Settings &gt; Secrets</strong>. In the Windows 10 Electron build, credentials are encrypted separately via Windows DPAPI (<code className="font-mono text-slate-300">electron.safeStorage</code>). Model quotas and rate limits depend on your Google AI billing tier.
-        </p>
+        <div className="rounded-lg border border-slate-800 bg-[#0A0E14] p-3.5 text-xs text-slate-300 space-y-1.5">
+          <div className="font-semibold text-slate-100">Where to Configure Your Gemini API Key (Backend-Only Security)</div>
+          <p className="text-slate-400 leading-relaxed">
+            For security, API keys are never typed into browser forms, never sent to frontend JavaScript, and never saved in JSON backups.
+          </p>
+          <ul className="list-disc pl-4 space-y-1 text-slate-400">
+            <li>
+              <strong className="text-slate-200">On Windows Localhost:</strong> Double-click{' '}
+              <code className="font-mono text-cyan-300">CONFIGURE-GEMINI-KEY.bat</code> in your STRANGE folder to save, update, or remove your key with masked input and user-only file permissions (reloads automatically without editing code).
+            </li>
+            <li>
+              <strong className="text-slate-200">In Google AI Studio Preview:</strong> Add{' '}
+              <code className="font-mono text-cyan-300">GEMINI_API_KEY</code> in <strong>Settings &gt; Secrets</strong>.
+            </li>
+            <li>
+              <strong className="text-slate-200">In Packaged Windows Electron App:</strong> Stored encrypted via Windows DPAPI (<code className="font-mono text-slate-300">electron.safeStorage</code>).
+            </li>
+          </ul>
+        </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {(['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as GeminiModelId[]).map((m) => (
+          {(['gemini-3.1-flash-lite', 'gemini-4-hydrogen'] as GeminiModelId[]).map((m) => (
             <button
               key={m}
               type="button"
@@ -370,27 +421,100 @@ export function SettingsView({
                   : 'border-slate-800 bg-[#0A0E14] text-slate-300 hover:border-slate-700'
               }`}
             >
-              <div className="font-mono text-sm font-medium">{m}</div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-mono text-sm font-medium">{m}</span>
+                {m === 'gemini-3.1-flash-lite' && (
+                  <span className="text-[11px] font-medium text-emerald-400">Recommended Default</span>
+                )}
+              </div>
               <div className="mt-1 text-xs text-slate-400">
-                {m === 'gemini-4-hydrogen'
-                  ? 'Default: best balance for search grounding, PRDs, code synthesis, and diagnosis.'
-                  : 'Lightweight fast mode: lowest latency and token cost for quick commands.'}
+                {m === 'gemini-3.1-flash-lite'
+                  ? 'Fast, reliable default for live chat, automation tools, web grounding, and low-RAM Windows laptops.'
+                  : 'Higher-capacity model with automatic fallback to gemini-3.1-flash-lite if temporarily busy (503).'}
               </div>
             </button>
           ))}
         </div>
 
+        {/* Configurable Active Model ID */}
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <label htmlFor="custom-gemini-model" className="text-slate-400">
+            Active Model ID:
+          </label>
+          <input
+            id="custom-gemini-model"
+            type="text"
+            value={customModelInput}
+            onChange={(e) => setCustomModelInput(e.target.value)}
+            placeholder="e.g. gemini-3.1-flash-lite"
+            className="w-60 rounded-lg border border-slate-700 bg-[#0A0E14] px-3 py-1.5 font-mono text-xs text-slate-200 focus:border-cyan-500/50 focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => handleSaveModel(customModelInput)}
+            className="rounded-lg border border-slate-700 bg-[#0A0E14] px-3 py-1.5 font-medium text-slate-200 hover:border-cyan-500/40"
+          >
+            Save Model
+          </button>
+          {modelError && <span className="text-red-400">{modelError}</span>}
+        </div>
+
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
+            onClick={handleRunDiagnostics}
+            disabled={runningDiagnostics || testingGemini}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-cyan-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
+          >
+            <Activity className="h-3.5 w-3.5" />
+            <span>{runningDiagnostics ? 'Running 6-Point Check...' : 'Run 6-Point AI Diagnostic'}</span>
+          </button>
+          <button
+            type="button"
             onClick={handleTestGemini}
-            disabled={testingGemini}
+            disabled={testingGemini || runningDiagnostics}
             className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-xs font-medium text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-50"
           >
-            {testingGemini ? 'Verifying...' : 'Test Live Gemini Connection'}
+            {testingGemini ? 'Verifying...' : 'Quick Live Ping'}
           </button>
           {geminiResult && <span className="text-xs text-slate-300">{geminiResult}</span>}
         </div>
+
+        {diagnostics && (
+          <div className="rounded-lg border border-slate-800 bg-[#0A0E14] p-4 space-y-2.5 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+              <div className="font-semibold text-slate-100">
+                AI Connection Diagnostic —{' '}
+                <span className={diagnostics.overallOk ? 'text-emerald-400' : 'text-red-400'}>
+                  {diagnostics.overallOk ? 'All 6 Checks Operational' : 'Action Needed'}
+                </span>
+              </div>
+              <div className="font-mono text-slate-400 tabular-nums">
+                {diagnostics.activeModelUsed || diagnostics.configuredModel} · {diagnostics.latencyMs}ms
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              {diagnostics.checks.map((chk) => (
+                <div
+                  key={chk.id}
+                  className="flex items-start gap-2.5 border-b border-slate-800/40 pb-1.5 last:border-0 last:pb-0"
+                >
+                  {chk.status === 'pass' ? (
+                    <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                  ) : chk.status === 'warn' ? (
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
+                  ) : (
+                    <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" />
+                  )}
+                  <div className="min-w-0">
+                    <span className="font-medium text-slate-200">{chk.label}: </span>
+                    <span className="text-slate-400">{chk.details}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Modular Secondary Provider: FreeModel.in */}
         <div className="rounded-lg border border-slate-800 bg-[#0A0E14] p-4 text-xs">

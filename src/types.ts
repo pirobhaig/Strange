@@ -19,11 +19,17 @@ export type AgentTaskState =
   | 'failed'
   | 'paused';
 
-export type GeminiModelId = 'gemini-4-hydrogen' | 'gemini-3.1-flash-lite';
+export type GeminiModelId = 'gemini-3.1-flash-lite' | 'gemini-4-hydrogen' | string;
 
 export interface GroundingSource {
   title: string;
   uri: string;
+}
+
+export interface ExecutedToolAction {
+  name: string;
+  summary: string;
+  status: 'success' | 'error';
 }
 
 export interface Conversation {
@@ -40,6 +46,8 @@ export interface ChatMessage {
   content: string;
   taskState?: AgentTaskState;
   sources?: GroundingSource[];
+  executedTools?: ExecutedToolAction[];
+  modelUsed?: string;
   attachmentName?: string;
   createdAt: string;
 }
@@ -228,6 +236,7 @@ export interface ErrorReport {
 export interface IntegrationStatus {
   gemini: {
     configured: boolean;
+    credentialSource: 'environment' | 'local_env_file' | 'unset';
     model: GeminiModelId;
     lastVerifiedAt: string | null;
     lastStatus: 'untested' | 'connected' | 'error';
@@ -320,4 +329,21 @@ export interface WhopAnalytics {
     cancellations: number | null;
     refunds: number | null;
   };
+}
+
+export interface AiDiagnosticCheck {
+  id: string;
+  label: string;
+  status: 'pass' | 'fail' | 'warn';
+  details: string;
+}
+
+export interface AiDiagnosticsReport {
+  overallOk: boolean;
+  provider: string;
+  configuredModel: string;
+  activeModelUsed: string | null;
+  latencyMs: number;
+  checkedAt: string;
+  checks: AiDiagnosticCheck[];
 }

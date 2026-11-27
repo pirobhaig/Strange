@@ -1,0 +1,114 @@
+[
+  {
+    "id": "act_f44f7e386ab3",
+    "category": "ai",
+    "action": "Assistant request failed",
+    "details": "{\"error\":{\"code\":503,\"message\":\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\",\"status\":\"UNAVAILABLE\"}}",
+    "status": "error",
+    "createdAt": "2026-11-27T15:26:22.040Z"
+  },
+  {
+    "id": "act_a3b1814fac49",
+    "category": "automation",
+    "action": "Ran scheduled task: Live Monitor",
+    "details": "No registered projects to check.",
+    "status": "success",
+    "createdAt": "2026-11-27T15:23:41.846Z"
+  },
+  {
+    "id": "act_9ecb0df22db2",
+    "category": "ai",
+    "action": "Assistant request failed",
+    "details": "Gemini API rate limit or quota reached (429 RESOURCE_EXHAUSTED). Wait briefly or use a billing-enabled API key.",
+    "status": "error",
+    "createdAt": "2026-11-27T15:23:30.653Z"
+  },
+  {
+    "id": "act_f83a32d57066",
+    "category": "automation",
+    "action": "Created scheduled task via chat: Live Monitor",
+    "details": "Type: health_check, every 30 min",
+    "status": "success",
+    "createdAt": "2026-11-27T15:23:10.970Z"
+  },
+  {
+    "id": "act_0edb1cc8fb6f",
+    "category": "ai",
+    "action": "Assistant request failed",
+    "details": "Gemini API rate limit or quota reached (429 RESOURCE_EXHAUSTED). Wait briefly or use a billing-enabled API key.",
+    "status": "error",
+    "createdAt": "2026-11-27T15:22:33.637Z"
+  },
+  {
+    "id": "act_70e83ec0bd25",
+    "category": "ai",
+    "action": "Tested Gemini API connection",
+    "details": "Connected (gemini-3.1-flash-lite, 3965ms)",
+    "status": "success",
+    "createdAt": "2026-11-27T15:21:02.359Z"
+  },
+  {
+    "id": "act_56509d0d8892",
+    "category": "ai",
+    "action": "Ran 6-point AI connection diagnostic",
+    "details": "All 6 checks passed (gemini-3.1-flash-lite, 1876ms)",
+    "status": "success",
+    "createdAt": "2026-11-27T15:20:58.386Z"
+  },
+  {
+    "id": "act_b4a7e90be924",
+    "category": "settings",
+    "action": "Updated STRANGE preferences",
+    "details": "gemini_model",
+    "status": "info",
+    "createdAt": "2026-11-27T15:20:56.501Z"
+  },
+  {
+    "id": "act_9f3e7742a966",
+    "category": "ai",
+    "action": "Tested Gemini API connection",
+    "details": "Connected (gemini-3.1-flash-lite, 4051ms)",
+    "status": "success",
+    "createdAt": "2026-11-27T15:13:22.220Z"
+  },
+  {
+    "id": "act_ab4965bde8cb",
+    "category": "ai",
+    "action": "Tested Gemini API connection",
+    "details": "{\"error\":{\"code\":503,\"message\":\"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\",\"status\":\"UNAVAILABLE\"}}",
+    "status": "error",
+    "createdAt": "2026-11-27T15:13:18.138Z"
+  },
+  {
+    "id": "act_56435b1d2c26",
+    "category": "ai",
+    "action": "Assistant request failed",
+    "details": "Gemini API rate limit or quota reached (RESOURCE_EXHAUSTED). Wait briefly or switch to a billing-enabled API key in Settings > Secrets.",
+    "status": "error",
+    "createdAt": "2026-11-27T15:09:39.856Z"
+  },
+  {
+    "id": "act_ad45204e3e90",
+    "category": "ai",
+    "action": "Assistant request failed",
+    "details": "Gemini API rate limit or quota reached (RESOURCE_EXHAUSTED). Wait briefly or switch to a billing-enabled API key in Settings > Secrets.",
+    "status": "error",
+    "createdAt": "2026-11-27T15:09:31.991Z"
+  },
+  {
+    "id": "act_7086c9cab2ed",
+    "category": "ai",
+    "action": "Assistant request failed",
+    "details": "Gemini API rate limit or quota reached (RESOURCE_EXHAUSTED). Wait briefly or switch to a billing-enabled API key in Settings > Secrets.",
+    "status": "error",
+    "createdAt": "2026-11-27T15:09:11.712Z"
+  },
+  {
+    "id": "act_8fdf5c88088d",
+    "category": "settings",
+    "action": "Updated STRANGE preferences",
+    "details": "gemini_model, onboarding_completed",
+    "status": "info",
+    "createdAt": "2026-11-27T14:00:04.201Z"
+  }
+]

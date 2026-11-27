@@ -1,5 +1,6 @@
 import type {
   ActivityLog,
+  AiDiagnosticsReport,
   ApprovalItem,
   AutomationTask,
   BackupRecord,
@@ -48,10 +49,20 @@ export const api = {
     ),
 
   testGemini: (model?: GeminiModelId) =>
-    requestJson<{ ok: boolean; model: GeminiModelId; latencyMs: number; reply?: string; error?: string }>(
-      '/api/ai/test',
-      { method: 'POST', body: JSON.stringify({ model }) }
-    ),
+    requestJson<{
+      ok: boolean;
+      model: GeminiModelId;
+      modelUsed?: GeminiModelId;
+      latencyMs: number;
+      reply?: string;
+      error?: string;
+    }>('/api/ai/test', { method: 'POST', body: JSON.stringify({ model }) }),
+
+  runAiDiagnostics: (model?: GeminiModelId) =>
+    requestJson<AiDiagnosticsReport>('/api/ai/diagnostics', {
+      method: 'POST',
+      body: JSON.stringify({ model }),
+    }),
 
   // Conversations & Chat
   listConversations: () => requestJson<{ conversations: Conversation[] }>('/api/conversations'),
