@@ -12,11 +12,15 @@ if %errorlevel% neq 0 (
 
 if not exist "node_modules" (
   echo Installing dependencies...
-  call npm install
+  call npm install --no-audit --no-fund
   if %errorlevel% neq 0 (
-    echo npm install failed.
-    pause
-    exit /b 1
+    echo Retrying with --legacy-peer-deps...
+    call npm install --legacy-peer-deps --no-audit --no-fund
+    if %errorlevel% neq 0 (
+      echo npm install failed.
+      pause
+      exit /b 1
+    )
   )
 )
 

@@ -11,12 +11,26 @@ if %errorlevel% neq 0 (
 )
 
 echo [1/3] Installing dependencies + Electron builder...
-call npm install
-call npm install -D electron electron-builder
+call npm install --no-audit --no-fund
 if %errorlevel% neq 0 (
-  echo Dependency installation failed.
-  pause
-  exit /b 1
+  echo Retrying with --legacy-peer-deps...
+  call npm install --legacy-peer-deps --no-audit --no-fund
+  if %errorlevel% neq 0 (
+    echo Dependency installation failed.
+    pause
+    exit /b 1
+  )
+)
+
+call npm install -D electron electron-builder --no-audit --no-fund
+if %errorlevel% neq 0 (
+  echo Retrying Electron install with --legacy-peer-deps...
+  call npm install -D electron electron-builder --legacy-peer-deps --no-audit --no-fund
+  if %errorlevel% neq 0 (
+    echo Electron installation failed.
+    pause
+    exit /b 1
+  )
 )
 
 echo [2/3] Building frontend, compiled backend, and Windows 10 .exe installer...
